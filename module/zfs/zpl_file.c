@@ -27,7 +27,9 @@
 #include <sys/zfs_vnops.h>
 #include <sys/zfs_znode.h>
 #include <sys/zpl.h>
+#include <sys/zpl_mmap.h>
 
+const static struct vm_operations_struct zpl_file_vm_ops;
 
 static int
 zpl_open(struct inode *ip, struct file *filp)
@@ -261,157 +263,26 @@ zpl_llseek(struct file *filp, loff_t offset, int whence)
 }
 
 /*
- * It's worth taking a moment to describe how mmap is implemented
- * for zfs because it differs considerably from other Linux filesystems.
- * However, this issue is handled the same way under OpenSolaris.
- *
- * The issue is that by design zfs bypasses the Linux page cache and
- * leaves all caching up to the ARC.  This has been shown to work
- * well for the common read(2)/write(2) case.  However, mmap(2)
- * is problem because it relies on being tightly integrated with the
- * page cache.  To handle this we cache mmap'ed files twice, once in
- * the ARC and a second time in the page cache.  The code is careful
- * to keep both copies synchronized.
- *
- * When a file with an mmap'ed region is written to using write(2)
- * both the data in the ARC and existing pages in the page cache
- * are updated.  For a read(2) data will be read first from the page
- * cache then the ARC if needed.  Neither a write(2) or read(2) will
- * will ever result in new pages being added to the page cache.
- *
- * New pages are added to the page cache only via .readpage() which
- * is called when the vfs needs to read a page off disk to back the
- * virtual memory region.  These pages may be modified without
- * notifying the ARC and will be written out periodically via
- * .writepage().  This will occur due to either a sync or the usual
- * page aging behavior.  Note because a read(2) of a mmap'ed file
- * will always check the page cache first even when the ARC is out
- * of date correct data will still be returned.
- *
- * While this implementation ensures correct behavior it does have
- * have some drawbacks.  The most obvious of which is that it
- * increases the required memory footprint when access mmap'ed
- * files.  It also adds additional complexity to the code keeping
- * both caches synchronized.
- *
- * Longer term it may be possible to cleanly resolve this wart by
- * mapping page cache pages directly on to the ARC buffers.  The
- * Linux address space operations are flexible enough to allow
- * selection of which pages back a particular index.  The trick
- * would be working out the details of which subsystem is in
- * charge, the ARC, the page cache, or both.  It may also prove
- * helpful to move the ARC buffers to a scatter-gather lists
- * rather than a vmalloc'ed region.
+ * ZFSOnLinux mmap() implementation
+ * Solaris would buffer mmap'ed files in both ARC and the page cache, with
+ * careful attention taken to ensure that to two remained in sync. That wasted
+ * memory and was inefficient, so we instead use ARC loan buffers so that we
+ * can utilize ARC itself. This is possible because all ARC buffers are page
+ * aligned.
  */
 static int
 zpl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct inode *ip = filp->f_mapping->host;
-	znode_t *zp = ITOZ(ip);
 	int error;
 
 	error = -zfs_map(ip, vma->vm_pgoff, (caddr_t *)vma->vm_start,
 	    (size_t)(vma->vm_end - vma->vm_start), vma->vm_flags);
 	if (error)
 		return (error);
-
-	error = generic_file_mmap(filp, vma);
-	if (error)
-		return (error);
-
-	mutex_enter(&zp->z_lock);
-	zp->z_is_mapped = 1;
-	mutex_exit(&zp->z_lock);
-
-	return (error);
-}
-
-/*
- * Populate a page with data for the Linux page cache.  This function is
- * only used to support mmap(2).  There will be an identical copy of the
- * data in the ARC which is kept up to date via .write() and .writepage().
- *
- * Current this function relies on zpl_read_common() and the O_DIRECT
- * flag to read in a page.  This works but the more correct way is to
- * update zfs_fillpage() to be Linux friendly and use that interface.
- */
-static int
-zpl_readpage(struct file *filp, struct page *pp)
-{
-	struct inode *ip;
-	struct page *pl[1];
-	int error = 0;
-
-	ASSERT(PageLocked(pp));
-	ip = pp->mapping->host;
-	pl[0] = pp;
-
-	error = -zfs_getpage(ip, pl, 1);
-
-	if (error) {
-		SetPageError(pp);
-		ClearPageUptodate(pp);
-	} else {
-		ClearPageError(pp);
-		SetPageUptodate(pp);
-		flush_dcache_page(pp);
-	}
-
-	unlock_page(pp);
-	return error;
-}
-
-/*
- * Populate a set of pages with data for the Linux page cache.  This
- * function will only be called for read ahead and never for demand
- * paging.  For simplicity, the code relies on read_cache_pages() to
- * correctly lock each page for IO and call zpl_readpage().
- */
-static int
-zpl_readpages(struct file *filp, struct address_space *mapping,
-	struct list_head *pages, unsigned nr_pages)
-{
-	return (read_cache_pages(mapping, pages,
-	    (filler_t *)zpl_readpage, filp));
-}
-
-int
-zpl_putpage(struct page *pp, struct writeback_control *wbc, void *data)
-{
-	struct address_space *mapping = data;
-
-	ASSERT(PageLocked(pp));
-	ASSERT(!PageWriteback(pp));
-	ASSERT(!(current->flags & PF_NOFS));
-
-	/*
-	 * Annotate this call path with a flag that indicates that it is
-	 * unsafe to use KM_SLEEP during memory allocations due to the
-	 * potential for a deadlock.  KM_PUSHPAGE should be used instead.
-	 */
-	current->flags |= PF_NOFS;
-	(void) zfs_putpage(mapping->host, pp, wbc);
-	current->flags &= ~PF_NOFS;
-
-	return (0);
-}
-
-static int
-zpl_writepages(struct address_space *mapping, struct writeback_control *wbc)
-{
-	return write_cache_pages(mapping, wbc, zpl_putpage, mapping);
-}
-
-/*
- * Write out dirty pages to the ARC, this function is only required to
- * support mmap(2).  Mapped pages may be dirtied by memory operations
- * which never call .write().  These dirty pages are kept in sync with
- * the ARC buffers via this hook.
- */
-static int
-zpl_writepage(struct page *pp, struct writeback_control *wbc)
-{
-	return zpl_putpage(pp, wbc, pp->mapping);
+	file_accessed(filp);
+	vma->vm_ops = &zpl_file_vm_ops;
+	return 0;
 }
 
 /*
@@ -478,13 +349,126 @@ zpl_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 }
 #endif /* CONFIG_COMPAT */
 
+static void
+zpl_mmap_open(struct vm_area_struct *vma)
+{
+}
 
-const struct address_space_operations zpl_address_space_operations = {
-	.readpages	= zpl_readpages,
-	.readpage	= zpl_readpage,
-	.writepage	= zpl_writepage,
-	.writepages     = zpl_writepages,
-};
+static void
+zpl_mmap_close(struct vm_area_struct *vma)
+{
+	struct file *filp = vma->vm_file;
+	struct inode *ip = filp->f_mapping->host;
+	znode_t *zp = ITOZ(ip);
+	zpl_mmap_ref_t *zmap_ref = NULL;
+
+	if ((vma->vm_flags & VM_SHARED)) {
+		// FIXME: Flush here
+	}
+
+	mutex_enter(&zp->z_lock);
+
+	for (zmap_ref = list_head(&zp->z_mmap_reflist);
+		zmap_ref; list_next(&zp->z_mmap_reflist, zmap_ref)) {
+		if (zmap_ref->vma == vma)
+			break;
+	}
+
+	ASSERT(zmap_ref);
+        if (!list_is_empty(&zp->z_mmap_reflist))
+	        list_remove(&zp->z_mmap_reflist, zmap_ref);
+        dmu_buf_unmap(zmap_ref->dbuf, NULL, zp);
+	mutex_exit(&zp->z_lock);
+}
+
+static int
+zpl_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+
+	struct file *filp = vma->vm_file;
+	struct inode *ip = filp->f_mapping->host;
+	znode_t *zp = ITOZ(ip), *tp;
+	zfs_sb_t *zsb = ITOZSB(ip);
+	uint64_t byte_offset = vmf->pgoff << PAGE_SHIFT;
+	zpl_mmap_ref_t *zmap_ref;
+	dmu_buf_t *dbuf;
+        void *page_addr = NULL;
+
+	mutex_enter(&zp->z_lock);
+
+	dmu_buf_hold(zsb->z_os, zp->z_id, byte_offset, NULL, &dbuf, 0);
+	tp = dmu_buf_mmap_owner(dbuf, NULL);
+	if (tp == NULL) {
+                zmap_ref = kmem_cache_alloc(zpl_mmap_ref_cache, KM_PUSHPAGE);
+
+		if (zmap_ref == NULL) {
+		        mutex_exit(&zp->z_lock);
+			return -ENOMEM;
+                }
+
+		zmap_ref->offset = byte_offset;
+		zmap_ref->refcnt = 1;
+                zmap_ref->vma = vma;
+                zmap_ref->dbuf = dbuf;
+
+		list_insert_head(&zp->z_mmap_reflist, zmap_ref);
+
+		/* Add a reference to object to pin it in place for mmap. */
+		dmu_buf_mmap(dbuf, NULL, zp);
+	} else if (tp == zp) {
+		for (zmap_ref = list_head(&zp->z_mmap_reflist);
+			zmap_ref; list_next(&zp->z_mmap_reflist, zmap_ref)) {
+			if (zmap_ref->offset == byte_offset)
+				break;
+		}
+		zmap_ref->refcnt++;
+	} else {
+		// We should never fault on another znode's buffer
+		VERIFY(0);
+	}
+
+	dmu_buf_rele(dbuf, NULL);
+	zp->z_mapcnt++;
+        /*
+         * Calculate the faulted page in the following 2 scenarios:
+         * 1. dmu block size <= PAGE_SIZE, since a dmu buf will
+         * never cross page boundary, so use the page this dmu buf
+         * resides directly.
+         * 2. dmu block size > PAGE_SIZE, since the size of the dmu 
+         * buf is multiple of pages, we calculate the page using
+         * this formula:
+         *  page number = dbuf->db_data + 
+         *      vmf->pgoff % (dbuf->db_size >> PAGE_SHIFT)
+         */
+        if (dbuf->db_size <= PAGE_SIZE)
+              page_addr = dbuf->db_data;
+        else
+              page_addr = dbuf->db_data + 
+                      vmf->pgoff % (dbuf->db_size >> PAGE_SHIFT);
+        
+        /*
+         *  Dmu bufs can be backed both by vmalloced and kmalloced memory.
+         */
+        if (kmem_virt(page_addr))
+              vmf->page = vmalloc_to_page(page_addr);
+        else
+              vmf->page = virt_to_page(page_addr);
+	get_page(vmf->page);
+	lock_page(vmf->page);
+	mutex_exit(&zp->z_lock);
+
+	return VM_FAULT_LOCKED;
+}
+
+static int
+zpl_mmap_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	struct page *page = vmf->page;
+	lock_page(page);
+	set_page_dirty(page);
+	SetPageUptodate(page);
+	return VM_FAULT_LOCKED;
+}
 
 const struct file_operations zpl_file_operations = {
 	.open		= zpl_open,
@@ -501,6 +485,13 @@ const struct file_operations zpl_file_operations = {
 #ifdef CONFIG_COMPAT
 	.compat_ioctl   = zpl_compat_ioctl,
 #endif
+};
+
+const static struct vm_operations_struct zpl_file_vm_ops = {
+	.open		= zpl_mmap_open,
+	.close		= zpl_mmap_close,
+	.fault		= zpl_mmap_fault,
+	.page_mkwrite	= zpl_mmap_mkwrite,
 };
 
 const struct file_operations zpl_dir_file_operations = {

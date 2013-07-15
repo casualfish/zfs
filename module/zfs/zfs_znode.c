@@ -58,6 +58,7 @@
 #include <sys/fs/zfs.h>
 #include <sys/kidmap.h>
 #include <sys/zpl.h>
+#include <sys/zpl_mmap.h>
 #endif /* _KERNEL */
 
 #include <sys/dmu.h>
@@ -104,6 +105,8 @@ zfs_znode_cache_constructor(void *buf, void *arg, int kmflags)
 	inode_init_once(ZTOI(zp));
 	list_link_init(&zp->z_link_node);
 
+        list_create(&zp->z_mmap_reflist, sizeof(zpl_mmap_ref_t), 
+                                offsetof(zpl_mmap_ref_t, ref));
 	mutex_init(&zp->z_lock, NULL, MUTEX_DEFAULT, NULL);
 	rw_init(&zp->z_parent_lock, NULL, RW_DEFAULT, NULL);
 	rw_init(&zp->z_name_lock, NULL, RW_DEFAULT, NULL);
@@ -128,6 +131,7 @@ zfs_znode_cache_destructor(void *buf, void *arg)
 {
 	znode_t *zp = buf;
 
+        list_destroy(&zp->z_mmap_reflist);
 	ASSERT(!list_link_active(&zp->z_link_node));
 	mutex_destroy(&zp->z_lock);
 	rw_destroy(&zp->z_parent_lock);
@@ -308,7 +312,6 @@ zfs_inode_set_ops(zfs_sb_t *zsb, struct inode *ip)
 	case S_IFREG:
 		ip->i_op = &zpl_inode_operations;
 		ip->i_fop = &zpl_file_operations;
-		ip->i_mapping->a_ops = &zpl_address_space_operations;
 		break;
 
 	case S_IFDIR:
@@ -380,7 +383,6 @@ zfs_znode_alloc(zfs_sb_t *zsb, dmu_buf_t *db, int blksz,
 	zp->z_seq = 0x7A4653;
 	zp->z_sync_cnt = 0;
 	zp->z_is_zvol = B_FALSE;
-	zp->z_is_mapped = B_FALSE;
 	zp->z_is_ctldir = B_FALSE;
 	zp->z_is_stale = B_FALSE;
 

@@ -48,6 +48,7 @@
 #include <sys/metaslab_impl.h>
 #include <sys/arc.h>
 #include <sys/ddt.h>
+#include <sys/zpl_mmap.h>
 #include "zfs_prop.h"
 #include "zfeature_common.h"
 
@@ -1630,6 +1631,7 @@ spa_init(int mode)
 
 	spa_mode_global = mode;
 
+	zpl_mmap_init();
 	fm_init();
 	refcount_init();
 	unique_init();
@@ -1660,6 +1662,7 @@ spa_fini(void)
 	unique_fini();
 	refcount_fini();
 	fm_fini();
+	zpl_mmap_fini();
 
 	avl_destroy(&spa_namespace_avl);
 	avl_destroy(&spa_spare_avl);

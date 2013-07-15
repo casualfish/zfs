@@ -2106,6 +2106,24 @@ dbuf_rele(dmu_buf_impl_t *db, void *tag)
 	dbuf_rele_and_unlock(db, tag);
 }
 
+void dmu_buf_mmap(dmu_buf_t *db_fake, void* tag, znode_t *zp)
+{
+	dmu_buf_impl_t *db = (dmu_buf_impl_t *)db_fake;
+	dbuf_add_ref(db, tag);
+}
+
+void dmu_buf_unmap(dmu_buf_t *db_fake, void *tag, znode_t *zp)
+{
+	dmu_buf_impl_t *db = (dmu_buf_impl_t *)db_fake;
+	dbuf_rele(db, tag);
+}
+
+znode_t *dmu_buf_mmap_owner(dmu_buf_t *db_fake, void* tag)
+{
+	dmu_buf_impl_t *db = (dmu_buf_impl_t *)db_fake;
+	return db->db_zp;
+}
+
 /*
  * dbuf_rele() for an already-locked dbuf.  This is necessary to allow
  * db_dirtycnt and db_holds to be updated atomically.

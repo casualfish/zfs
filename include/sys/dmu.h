@@ -70,6 +70,7 @@ struct sa_handle;
 typedef struct objset objset_t;
 typedef struct dmu_tx dmu_tx_t;
 typedef struct dsl_dir dsl_dir_t;
+typedef struct znode znode_t;
 
 typedef enum dmu_object_byteswap {
 	DMU_BSWAP_UINT8,
@@ -447,6 +448,9 @@ int dmu_buf_hold(objset_t *os, uint64_t object, uint64_t offset,
 void dmu_buf_add_ref(dmu_buf_t *db, void* tag);
 void dmu_buf_rele(dmu_buf_t *db, void *tag);
 uint64_t dmu_buf_refcount(dmu_buf_t *db);
+void dmu_buf_mmap(dmu_buf_t *db, void* tag, znode_t *zp);
+void dmu_buf_unmap(dmu_buf_t *db, void *tag, znode_t *zp);
+znode_t *dmu_buf_mmap_owner(dmu_buf_t *db, void* tag);
 
 /*
  * dmu_buf_hold_array holds the DMU buffers which contain all bytes in a

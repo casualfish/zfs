@@ -214,10 +214,10 @@ typedef struct znode {
 	sa_handle_t	*z_sa_hdl;	/* handle to sa data */
 	boolean_t	z_is_sa;	/* are we native sa? */
 	boolean_t	z_is_zvol;	/* are we used by the zvol */
-	boolean_t	z_is_mapped;	/* are we mmap'ed */
 	boolean_t	z_is_ctldir;	/* are we .zfs entry */
 	boolean_t	z_is_stale;	/* are we stale due to rollback? */
 	struct inode	z_inode;	/* generic vfs inode */
+	list_t		z_mmap_reflist; /* List of mappings */
 } znode_t;
 
 

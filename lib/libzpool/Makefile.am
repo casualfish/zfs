@@ -20,6 +20,7 @@ libzpool_la_SOURCES = \
 	$(top_srcdir)/module/zcommon/zfs_uio.c \
 	$(top_srcdir)/module/zcommon/zpool_prop.c \
 	$(top_srcdir)/module/zcommon/zprop_common.c \
+	$(top_srcdir)/module/zfs/zpl_mmap.c \
 	$(top_srcdir)/module/zfs/arc.c \
 	$(top_srcdir)/module/zfs/bplist.c \
 	$(top_srcdir)/module/zfs/bpobj.c \
@@ -118,4 +119,5 @@ EXTRA_DIST = \
 	$(top_srcdir)/module/zfs/zpl_super.c \
 	$(top_srcdir)/module/zfs/zpl_xattr.c \
 	$(top_srcdir)/module/zfs/zvol.c \
-	$(top_srcdir)/module/zpios/pios.c
+	$(top_srcdir)/module/zpios/pios.c \
+	$(top_srcdir)/module/zfs/zpl_mmap.c

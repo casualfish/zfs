@@ -199,6 +199,9 @@ typedef struct dmu_buf_impl {
 	 */
 	refcount_t db_holds;
 
+	/* znode that has a mapping to this buffer */
+	znode_t *db_zp;
+
 	/* buffer holding our data */
 	arc_buf_t *db_buf;
 
