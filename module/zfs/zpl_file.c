@@ -378,6 +378,7 @@ zpl_mmap_close(struct vm_area_struct *vma)
         if (!list_is_empty(&zp->z_mmap_reflist))
 	        list_remove(&zp->z_mmap_reflist, zmap_ref);
         dmu_buf_unmap(zmap_ref->dbuf, NULL, zp);
+        kmem_cache_free(zpl_mmap_ref_cache, zmap_ref);
 	mutex_exit(&zp->z_lock);
 }
 

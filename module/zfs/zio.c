@@ -192,6 +192,11 @@ zio_init(void)
 			if (size == (1 << SPA_MINBLOCKSHIFT))
 				flags |= KMC_KMEM;
 
+                        /*
+                         * For now we use KMC_OFFSLAB to solve the page aligning
+                         * problem.
+                         */
+                        flags |= (1<<7);
 			(void) sprintf(name, "zio_buf_%lu", (ulong_t)size);
 			zio_buf_cache[c] = kmem_cache_create(name, size,
 			    align, NULL, NULL, NULL, NULL, NULL, flags);
