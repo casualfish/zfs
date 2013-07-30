@@ -466,8 +466,6 @@ zpl_mmap_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct page *page = vmf->page;
 	lock_page(page);
-	set_page_dirty(page);
-	SetPageUptodate(page);
 	return VM_FAULT_LOCKED;
 }
 
